@@ -1,0 +1,101 @@
+---
+title: "ignyt CT/MR assignment tables"
+---
+
+#### MR
+
+```{r mr_summary_tables, echo=FALSE, message=FALSE}
+if(nrow(mr_att_unnested)>0){
+  mr_att_unnested %>%
+    group_by(`QGenda Abbrev`) %>%
+    summarise(
+      `Weighted exam units` = sum(exam_weighting),
+      `Number of exams` = n()
+    ) %>%
+    ignyt_kable()
+  }
+```
+
+#### CT
+
+```{r ct_summary_tables, echo=FALSE, message=FALSE}
+if(nrow(ct_att_unnested)>0){
+  ct_att_unnested %>%
+    group_by(`QGenda Abbrev`) %>%
+    summarise(
+      Shift = first(schedule_Names),
+      `Weighted exam units` = sum(exam_weighting),
+      `Number of exams` = n()
+    ) %>%
+    ignyt_kable()
+}
+```
+
+### CT details
+
+```{r ct_details, echo=FALSE, message=FALSE}
+if(nrow(ct_att_unnested)>0){
+  ct_att_unnested %>%
+    {if(exists("fell_unnested")) bind_rows(., filter(fell_unnested, modality_code=="CT")) else . } %>% 
+    select(
+      `QGenda Abbrev`, schedule_Names, patient, ris_accession_number, ris_mrn,
+      state_code, ris_exam_end_dt, wet_read_request, exam_description, exam_code, history, dmt, dmt_match
+    ) %>%
+    DT::datatable(options = list(order = list(3, 'asc'), pageLength = 100))
+}
+```
+
+### MRI details
+
+```{r mr_details, echo=FALSE, message=FALSE}
+if(nrow(mr_att_unnested)>0){
+  mr_att_unnested %>%
+    {if(exists("fell_unnested")) bind_rows(., filter(fell_unnested, modality_code=="MR")) else . } %>%
+    select(
+      `QGenda Abbrev`, schedule_Names, patient,
+      ris_accession_number, ris_mrn, state_code, ris_exam_end_dt,
+      wet_read_request, exam_description, history, dmt
+    ) %>%
+    DT::datatable(options = list(order = list(3, 'asc'), pageLength = 100))
+}
+```
+
+### Not successfully allocated exams
+
+```{r failures, echo=FALSE, message=FALSE}
+bind_rows(ct_att_unnested, mr_att_unnested) %>%
+  filter(assigned_status != "OK" & !is.na(assigned_status)) %>%
+  bind_rows(log_not_assigned_ct, log_not_assigned_mr) %>%
+  arrange(modality_code, wet_read_request, ris_exam_end_dt) %>%
+  select(
+    modality_code, ris_accession_number, ris_mrn, ris_exam_end_dt,
+    wet_read_request, state_code, dmt, radiologist_name, ps_status, assigned_status
+  ) %>%
+  DT::datatable()
+```
+
+
+### Leftovers
+
+```{r leftovers, echo=FALSE, message=FALSE, warning=FALSE}
+
+bind_rows(log_not_assigned_ct, log_not_assigned_mr) %>%
+  filter(
+    is.na(assigned_status),
+    !ps_status %in% c("Draft", "Pending Signature", "Final"),
+    !ris_accession_number %in% c(ct_att_unnested$ris_accession_number, mr_att_unnested$ris_accession_number)
+  ) %>%
+  select(
+    modality_code, ris_accession_number, ris_mrn, ris_exam_end_dt,
+    wet_read_request, state_code, dmt, ps_status
+  ) %>%
+  DT::datatable()
+```
+
+### Pin: Balance sheet
+
+```{r balance, echo=FALSE}
+if (!exists("testPin")) testPin <- FALSE
+if (!exists("rmd_service")) rmd_service <- "Body"
+kable_balance_sheet(testPin, service = rmd_service)
+```

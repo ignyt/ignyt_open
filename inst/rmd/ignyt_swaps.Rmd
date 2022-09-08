@@ -1,0 +1,82 @@
+---
+title: "Ignyt swap history"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(DT)
+```
+
+```{r conn}
+  con <- prep_conn_sqlserver(
+    conn_name = "RadOps",
+    server = "MYSQLSERVER",
+    port = 88888,
+    instance = "MSSQLSERVER",
+    domain = "MyCompany",
+    database = "MyDB"
+  )
+```
+```{r query}
+june <- mdb_query(con, "SELECT t1.*, t2.[User Name], t2.dmt, t2.ignyt_timestamp
+                                  FROM radiology_master_table t1
+                                  LEFT JOIN ignyt.log_assigned t2
+                                  ON t1.ris_accession_number = t2.ris_accession_number
+                                  WHERE t1.ris_finalized_dt >= cast('2020-06-01 00:00:00' as DATETIME)
+                                  AND t2.ris_accession_number IS NOT NULL;")
+
+june %<>%
+  mutate(
+    three_letters = radiologist_name %>% str_sub(1, 3) %>% tolower(),
+    rad_match = ifelse(three_letters == str_sub(tolower(`User Name`), 1, 3), TRUE, FALSE)
+  ) %>%
+  filter(modality_code != "CR") %>%
+  mutate(ignyt_timestamp = as_datetime(ignyt_timestamp)) %>%
+  group_by(ris_accession_number) %>%
+  slice(which.max(ignyt_timestamp)) %>%
+  ungroup() %>%
+  mutate(ignyt_timestamp_day = as_date(ignyt_timestamp))
+```
+
+## Graphical summary
+
+```{r graphs}
+ggplot(data = june, aes(x = ignyt_timestamp_day, fill = rad_match)) +
+  geom_bar() +
+  ggtitle("Overall") +
+  labs(x = "Assigned Date")
+
+ggplot(data = june, aes(x = ignyt_timestamp_day, fill = rad_match)) +
+  geom_bar() +
+  facet_wrap(~modality_code, scales = "free_y") +
+  labs(x = "Assigned Date")
+
+ggplot(data = june %>% filter(!is.na(rad_match)), aes(x = ignyt_timestamp_day, fill = rad_match)) +
+  geom_bar(aes(y = (..count..) / sum(..count..)), position = "fill") +
+  facet_wrap(~modality_code, scales = "free_y") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "%", x = "Assigned Date")
+```
+
+### Details
+
+Can be used to improve assignment algorithm.
+
+```{r summary_dt}
+june %>%
+  filter(rad_match == FALSE, ignyt_timestamp >= ymd("2020-06-22")) %>%
+  count(dmt, protocol_description) %>%
+  DT::datatable()
+```
+
+```{r detailed_dt}
+june %>%
+  filter(rad_match == FALSE, ignyt_timestamp >= ymd("2020-06-22")) %>%
+  select(modality, protocol_description, exam_description, history, referring_md_name, dmt, `User Name`, radiologist_name) %>%
+  DT::datatable()
+```

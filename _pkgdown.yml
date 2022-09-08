@@ -1,0 +1,13 @@
+home:
+  title: Ignyt radiology workflow manager
+  description: Customizable workflow manager for subspecialized radiology
+  
+template:
+  opengraph:
+    image:
+      src: man/figures/ignyt-github-card.png
+      alt: "Ignyt radiology workflow manager"
+    twitter:
+      creator: "@dr_becker"
+      site: "@ignyt_analytics"
+      card: summary_large_image

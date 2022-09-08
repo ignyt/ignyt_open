@@ -1,0 +1,145 @@
+---
+title: "ignyt CT/MR assignment"
+author: "Last assignment at:"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    code_folding: "hide"
+    includes:
+      after_body: footer.html
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+library(ignyt)
+library(dplyr)
+library(lubridate)
+library(tictoc)
+library(pins)
+
+# Initiate PS360 session for whole document:
+ps_api_response <- ps_auth()
+
+rmd_board <- "rconnect"
+
+shift_times <- c(
+  "Night Shift" = c(0:6),
+  "am" = c(7:11),
+  "pm" = c(12:16),
+  "Evening Shift" = c(17:23)
+) %>%
+  sort()
+
+h_shift <- function(x) {
+  shift_times[shift_times == x] %>%
+    names() %>%
+    stringr::str_extract("[a-zA-Z]+(\\s+[a-zA-Z]+)*")
+}
+
+shift <- h_shift(hour(Sys.time()))
+
+carryover_cr <- TRUE
+```
+
+```{r prior_pin}
+
+register_ignyt_board()
+if (nrow(pin_find("last_cr_shift_assignment", board = "ignyt_board")) > 0) {
+  last_shift <- pin_get("last_cr_shift_assignment", board = "ignyt_board")
+  if (last_shift$last_shift != shift) {
+    carryover_cr <- FALSE
+  }
+}
+```
+
+## CR allocation {.tabset}
+
+This report runs every 15 minutes and allocates radiographs to the CR attending (or CT/MR attendings = overflow management):
+
+```{r main}
+if (shift %in% c("am", "pm")) {
+  if (wday(Sys.Date()) %in% 2:6) {
+    cr_att <- shift_rads("CR", shift, only_carryover = carryover_cr)
+    ov_att <- rbind(
+      shift_rads("CT", shift, only_carryover = TRUE),
+      shift_rads("MR", shift, only_carryover = TRUE)
+    )
+  } # do nothing on weekends during day
+} else { # evenings and nights
+  cr_att <- shift_rads("CR", shift, only_carryover = TRUE)
+  ov_att <- cr_att
+}
+
+if (exists("cr_att")) {
+  crs <- fetch_completed() %>% filter(modality_code == "CR")
+
+  if (nrow(crs) > 0) {
+    crs %<>% divide_cr(cr_att, ov_att)
+    cr_att_unnested <- crs %>%
+      sim_assign() %>%
+      filter(assigned_status == "OK")
+
+    cr_att_unnested %>%
+      select(
+        `User Name`,
+        min_exams
+      ) %>%
+      group_by(`User Name`) %>%
+      filter(min_exams == min(min_exams)) %>%
+      ungroup() %>%
+      distinct() %>%
+      # filter(!`User Name` %in% cr_att$`User Name`) %>% # TODO: cont. updated, same as US
+      update_pin_bal()
+  }
+}
+```
+```{r update_pin}
+if (last_shift$last_shift != shift) {
+  last_shift$last_shift <- shfit
+  pin(last_shift, name = "last_cr_shift_assignment", board = "ignyt_board")
+}
+```
+
+### Table of last test
+
+```{r cr_table, echo = FALSE}
+
+cr_att_unnested %>%
+  filter(!is.na(assigned_exams)) %>%
+  select(
+    `QGenda Abbrev`, schedule_Names, ris_accession_number, ris_mrn,
+    state_code, ris_exam_end_dt, wet_read_request, modifier, dmt
+  ) %>%
+  ignyt_kable()
+```
+
+### Local test
+
+```{r cr_local, eval = FALSE}
+
+day_in_quarters <- seq(ymd_hm("2020-03-02 00:00"), ymd_hm("2020-03-02 23:45"), by = "15 mins") %>% sapply(function(x) paste0(hour(x), ":", minute(x)))
+
+cbq <- tibble(
+  day = rep(1:5, each = length(day_in_quarters)),
+  hour = rep(day_in_quarters, 5),
+  crs = list(NA)
+)
+
+for (d in 1:5) {
+  for (x in day_in_quarters) {
+    if (hour(hm(x)) < 12) shift <- "am" else shift <- "pm"
+    print(x)
+    cr_test_att <- sim_shift_rads(d, "CR", shift) %>% distinct()
+    ov_test_att <- sim_shift_rads(d, "CT", shift)
+    cbq[which(cbq$day == d & cbq$hour == x), ]$crs[[1]] <- divide_cr(cr_df = sim_crs(d, x), cr_test_att, ov_test_att, bypass_ps = TRUE)
+  }
+}
+
+cbq %<>% mutate(
+  rows = sapply(crs, nrow),
+  rows = ifelse(is.na(rows), 0, rows),
+  rows = ifelse(rows == 0, rows, rows - nrow(ov_test_att)),
+  shift = sapply(hm(hour) %>% hour(), h_shift)
+)
+```

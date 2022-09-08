@@ -1,0 +1,128 @@
+---
+title: "Balance sheet update"
+author: "Ignyt v`r packageVersion('ignyt')`"
+date: "`r Sys.time()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ignyt)
+library(pins)
+library(tidyverse)
+library(DBI)
+library(lubridate)
+
+if (hour(Sys.time()) < 12) {
+  shift <- "am"
+} else {
+  shift <- "pm"
+}
+
+testPin <- FALSE
+
+ignyt::register_ignyt_board()
+```
+
+This scheduled report transfers weighted exam units from `RadOps` into the `ignyt_balance_sheet` on the pinboard.
+
+## Code {.tabset}
+
+```{r sql_exams}
+
+con <- prep_conn_sqlserver(
+  conn_name = "RadOps",
+  server = "MYSQLSERVER",
+  port = 88888,
+  instance = "MSSQLSERVER",
+  domain = "MyCompany",
+  database = "MyDB"
+)
+
+trainee_shift_atts <- pin_get("RADpin_qgenda_today", board = "rsconnect") %>%
+  filter(schedule_Names %in% c("CT am", "CT pm", "CT** am", "CT** pm", "MRI am", "MRI pm")) %>%
+  distinct(`Radiologist RIS ID`) %>%
+  pull(`Radiologist RIS ID`)
+
+interval_reads <- mdb_query(con, "SELECT t1.*, t2.ris_accession_number
+                                  FROM RadDataView t1
+                                  LEFT JOIN ignyt.log_assigned t2
+                                  ON t1.[Accession Number] = t2.ris_accession_number
+                                  WHERE t2.ris_accession_number IS NULL
+                                  AND cast(t1.[Finalized Date] as datetime) BETWEEN cast(DATEADD(minute, -40, GETDATE()) as DATETIME) AND cast(DATEADD(minute, -10, GETDATE()) as DATETIME)
+                                  AND t1.Service in ('Body', 'Muscl', 'Cardiac')
+                                  AND t1.[Activity Status Code] = 'F';") %>%
+  select(-ris_accession_number) %>%
+  rename_at(names(ignyt:::datamart_colnames), ~ ignyt:::datamart_colnames) %>%
+  mutate(wet_read_request = "dummy_entry") %>%
+  ignyt:::clean_worklist() %>%
+  filter(!(!is.na(fellow_resident) & radiologist_ris_id %in% trainee_shift_atts & modality_code %in% c("CT", "MR"))) # Trainee reads already in min_weights
+
+pure_us_atts <- pin_get("RADpin_qgenda_today", "rsconnect") %>%
+  filter(task_name %in% c("Body - US am", "Body - US pm", "Body - US Koch am", "Body - US Koch pm")) %>%
+  pull(Name) %>%
+  unique()
+```
+
+
+```{r do}
+
+interval_us <- interval_reads %>% filter((modality_code == "US" & !radiologist_name %in% pure_us_atts) | (modality_code == "CT" & (patient_status_code == "I" | str_detect(patient_location_code, "UCC|SCC|ER"))))
+
+interval_non_us <- interval_reads %>%
+  filter(!((modality_code == "US" & !radiologist_name %in% pure_us_atts) | (modality_code == "CT" & (patient_status_code == "I" | str_detect(patient_location_code, "UCC|SCC|ER"))))) %>%
+  filter(!ris_accession_number %in% interval_us$ris_accession_number)
+
+summarise_reads <- function(intvl_reads) {
+  intvl_reads %>%
+    group_by(radiologist_ris_id) %>%
+    nest() %>%
+    ungroup() %>%
+    mutate(exams_read = map_dbl(data, ~ sum(.$exam_weighting))) %>%
+    left_join(ignyt:::fac_dmts_ct[, c("User Name", "Radiologist RIS ID")], by = c("radiologist_ris_id" = "Radiologist RIS ID")) %>%
+    select(`User Name`, exams_read)
+}
+
+interval_us_sums <- summarise_reads(interval_us)
+interval_non_us_sums <- summarise_reads(interval_non_us)
+
+atts <- pin_get("ignyt_balance_sheet", board = "rsconnect") %>%
+  full_join(interval_non_us_sums, by = "User Name") %>%
+  rename(min_exams = balance) %>%
+  mutate(
+    min_exams = replace_na(min_exams, 0),
+    exams_read = replace_na(exams_read, 0),
+    min_exams = ifelse((min_exams - exams_read >= 0), min_exams - exams_read, ifelse(min_exams < 0, min_exams, 0))
+  ) %>%
+  rename(balance = min_exams) %>%
+  filter(!is.na(`User Name`)) %>%
+  # Allow US to spill over (on weekdays, see above):
+  full_join(interval_us_sums, by = "User Name") %>%
+  rename(
+    min_exams = balance,
+    exams_read = exams_read.y
+  ) %>%
+  mutate(
+    min_exams = replace_na(min_exams, 0),
+    exams_read = replace_na(exams_read, 0),
+    min_exams = min_exams - exams_read,
+    exams_read = exams_read + exams_read.x
+  ) %>%
+  rename(balance = min_exams) %>%
+  select(-exams_read.x) %>%
+  filter(!is.na(`User Name`))
+
+pin(select(atts, -exams_read), name = "ignyt_balance_sheet", board = "rsconnect")
+```
+
+### Balance sheet summary
+
+```{r summary, echo=FALSE}
+atts %>% ignyt_kable()
+```
+
+### Past hour reads (details)
+
+```{r details, echo=FALSE}
+interval_reads %>% ignyt_kable()
+```

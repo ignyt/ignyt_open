@@ -1,0 +1,155 @@
+---
+title: "ignyt CT/MR TEST assignment"
+author: "Last assignment at:"
+date: "`r Sys.time()`"
+output: 
+  html_document:
+    includes:
+      after_body: footer.html
+params:
+  tomorrow: TRUE
+  reassign: FALSE
+  psBypass: FALSE
+  test_date: 
+    value: "2020-07-04"
+    input: date
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ignyt)
+library(dplyr)
+library(magrittr)
+library(lubridate)
+library(tictoc)
+library(pins)
+
+testPin <- TRUE
+test_tomorrow <- params$tomorrow
+reassign_reports <- params$reassign
+psBypass <- params$psBypass
+test_date <- switch(as.numeric(params$test_date != "2020-07-04") + 1, NULL, params$test_date)
+
+if (hour(Sys.time()) < 12) {
+  shift <- "am"
+} else {
+  shift <- ifelse(test_tomorrow, "am", "pm")
+}
+
+# Initiate PS360 session for whole document:
+if (!psBypass) ps_api_response <- ps_auth()
+
+register_ignyt_board(local = TRUE)
+pin_get("ignyt_balance_sheet", board = "rsconnect") %>%
+  pin("ignyt_balance_sheet_test", board = "rsconnect")
+
+null_pin_bal(test_pin = testPin)
+```
+
+## TEST Examination allocation report {.tabset}
+
+This report shows the daily allocation of radiological CT and MRI examinations to all radiologists on simulated date: `r test_date`. Running ignyt version `r packageVersion("ignyt")`.
+
+### Half-day summary
+
+```{r do, include=FALSE}
+tic()
+
+worklist <- fetch_completed(reassign = reassign_reports) %>%
+  prep_worklist()
+pin(worklist, "ignyt_worklist_log_test", board = "rsconnect")
+
+# Fellow ass.
+
+fell <- shift_rads("MR", shift, faculty = FALSE, pin_test = testPin, only_carryover = FALSE, tomorrow = test_tomorrow)
+if (nrow(fell) > 0) {
+  fell_unnested <- divide_train(worklist, fell, 4, bypass_ps = psBypass)
+  if (shift == "pm") fell_unnested %<>% filter(modality_code == "MR")
+  fell_unnested %<>% sim_assign() # !!! SIM !!! Change when making copypasta
+  fell_unnested %<>% filter(assigned_status == "OK")
+  worklist %<>% filter(!ris_accession_number %in% fell_unnested$ris_accession_number)
+}
+
+# Main and xover MR assignment
+
+if (shift == "am") {
+  night_att <- shift_rads("MR", "Night Shift", pin_test = testPin, only_carryover = FALSE, tomorrow = test_tomorrow)
+  if (nrow(night_att) != 1 & exists("night_att")) rm(night_att)
+}
+mr_att <- xover_rads("MR", shift, date = test_date, pin_test = testPin, only_carryover = FALSE, tomorrow = test_tomorrow) %>%
+  bind_rows(shift_rads("MR", shift, date = test_date, pin_test = testPin, only_carryover = FALSE, tomorrow = test_tomorrow))
+if (exists("night_att")) mr_att %<>% bind_rows(night_att)
+
+mrs <- worklist %>% divide_mr(mr_att, 2, late_dry = (shift == "am"), bypass_ps = psBypass)
+if (nrow(mrs$assignments) > 0) {
+  mr_att_unnested <- mrs$assignments %>% sim_assign() # !!! SIM !!! Change when making copypasta
+  log_not_assigned_mr <- bind_rows(
+    mrs$not_assigned,
+    mr_att_unnested %>% filter(assigned_status != "OK")
+  )
+  mr_att_unnested %<>% filter(assigned_status == "OK") %>%
+    mutate(ignyt_timestamp = Sys.time())
+
+  pin(mr_att_unnested, "assigned_mrs_test", board = "rsconnect")
+} else {
+  mr_att_unnested <- mrs$assignments
+  log_not_assigned_mr <- mrs$not_assigned
+}
+
+# CT carryover
+if (shift == "am") {
+  night_att2 <- shift_rads("CT", "Night Shift", pin_test = testPin, only_carryover = FALSE, tomorrow = test_tomorrow)
+  if (nrow(night_att2) != 1 & exists("night_att2")) rm(night_att2)
+}
+ct_att <- shift_rads("CT", shift, date = test_date, pin_test = testPin, tomorrow = test_tomorrow) %>% arrange(Name)
+if (exists("night_att2")) ct_att %<>% bind_rows(night_att2)
+
+if (nrow(mrs$assignments) > 0) ct_att <- transfer_points(mr_att_unnested, ct_att)
+
+if (nrow(ct_att[which(ct_att$min_exams > 11.5), ]) > 0) ct_att[which(ct_att$min_exams > 11.5), ]$min_exams <- 9
+ct_att %<>% filter(min_exams > 0)
+
+# CT assignment
+
+cts <- worklist %>%
+  filter(!ris_accession_number %in% mr_att_unnested$ris_accession_number) %>%
+  divide_ct(ct_att, 8, late_dry = (shift == "am"), bypass_ps = psBypass)
+if (nrow(cts$assignments) > 0) {
+  ct_att_unnested <- cts$assignments %>% sim_assign() # !!! SIM !!! Change when making copypasta
+  log_not_assigned_ct <- cts$not_assigned %>%
+    bind_rows(ct_att_unnested %>% filter(assigned_status != "OK"))
+  ct_att_unnested %<>% filter(assigned_status == "OK") %>%
+    mutate(ignyt_timestamp = Sys.time())
+
+  pin(ct_att_unnested, "assigned_cts_test", board = "rsconnect")
+} else {
+  ct_att_unnested <- cts$assignments
+  log_not_assigned_ct <- cts$not_assigned
+}
+
+# Put ppl. who got nothing assigned on pinboard:
+aergia <- bind_rows(mr_att, ct_att) %>%
+  distinct(Name, .keep_all = TRUE) %>%
+  filter(!Name %in% c(mr_att_unnested$Name, ct_att_unnested$Name))
+
+# Update pinbal only once:
+ct_att_unnested %>%
+  bind_rows(mr_att_unnested) %>%
+  bind_rows(aergia) %>%
+  slice_min_exams() %>%
+  update_pin_bal(test_pin = testPin)
+
+pin(bind_rows(log_not_assigned_ct, log_not_assigned_mr), "not_assigned_test", board = "rsconnect")
+
+if (!psBypass) ps_close()
+toc(log = TRUE, quiet = TRUE)
+
+if (psBypass) {
+  ct_att_unnested %<>% mutate(patient = "Test - PS Bypass")
+  mr_att_unnested %<>% mutate(patient = "Test - PS Bypass")
+}
+```
+Total time to run: `r tic.log() %>% unlist() %>% stringr::str_extract("\\d+\\..\\d+ sec")`
+
+```{r child = 'shift_tables.Rmd'}
+```

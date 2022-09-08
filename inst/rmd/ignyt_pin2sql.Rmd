@@ -1,0 +1,68 @@
+---
+title: "Transfer assigned exams to SQL database"
+author: "Ignyt v`r packageVersion('ignyt')`"
+date: "`r Sys.time()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ignyt)
+library(pins)
+library(dplyr)
+library(DBI)
+library(lubridate)
+
+register_ignyt_board()
+```
+
+This scheduled report transfers pinned assigned exams to the SQL database `ignyt.log_assigned` on `RadOps`
+
+```{r sql_conn}
+  con <- prep_conn_sqlserver(
+    conn_name = "RadOps",
+    server = "MYSQLSERVER",
+    port = 88888,
+    instance = "MSSQLSERVER",
+    domain = "MyCompany",
+    database = "MyDB"
+  )
+```
+
+
+```{r do}
+if(pin_exists("assigned_mrs")) pinned_mr <- pin_get("assigned_mrs", board = "rsconnect")
+if(pin_exists("assigned_mrs_xover")) pinned_mr2 <- pin_get("assigned_mrs_xover", board = "rsconnect")
+if(pin_exists("assigned_cts")) pinned_ct <- pin_get("assigned_cts", board = "rsconnect")
+
+if(length(ls(pattern="pinned"))>0){
+  all_assigned <- mget(ls(pattern="pinned")) %>%
+    lapply(select, -c(comments_min_exams:sum_assigned)) %>% # avoids bind_row error
+    bind_rows() %>% 
+    mutate_if(is.Date, as.character) %>% 
+    mutate_if(is.POSIXct, as.character) %>% 
+    # mutate(ris_optime_id = ifelse(is.null(ris_optime_id)|is.na(ris_optime_id), "0", ris_optime_id)) %>% 
+    select(
+      `Case ID (Main)`, `User Name`,  
+      task_name, patient, ris_accession_number, 
+      exam_weighting, dmt, dmt_match, 
+      ignyt_timestamp, exam_description, service
+      )
+}
+
+if(exists("all_assigned")) {
+  if(nrow(all_assigned)>0){
+    if(!"ignyt_log_assigned" %in% DBI::dbListTables(con)) {
+      dbWriteTable(con, SQL("ignyt.log_assigned"), all_assigned)
+    } else {
+      dbAppendTable(con, SQL("ignyt.log_assigned"), all_assigned)
+    }
+    if(pin_exists("assigned_mrs")) pinned_mr[0,] %>% pin("assigned_mrs", board = "rsconnect")
+    if(pin_exists("assigned_mrs_xover")) pinned_mr2[0,] %>% pin("assigned_mrs_xover", board = "rsconnect")
+    if(pin_exists("assigned_cts")) pinned_ct[0,] %>% pin("assigned_cts", board = "rsconnect")
+  }
+}
+
+```
+
+

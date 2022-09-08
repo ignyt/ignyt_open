@@ -1,0 +1,54 @@
+Package: ignyt
+Title: Ignyt radiology workflow manager
+Version: 0.0.0.9
+Authors@R: 
+    person("Anton", "Becker", , "ab@ign.yt", role = c("cre", "aut"),
+           comment = c(orcid = "0000-0001-8372-6496"))
+Description: Ignyt workflow manager for examination/read
+    assignment based on overall timeliness and subspecialization.
+License: MIT + file LICENSE
+URL: https://github.com/ignyt/ignyt_open
+BugReports: https://github.com/ignyt/ignyt_open/issues
+Depends: 
+    R (>= 3.5)
+Imports: 
+    curl,
+    DBI,
+    dplyr,
+    emo,
+    httr,
+    kableExtra,
+    knitr,
+    lubridate,
+    magrittr,
+    pins,
+    purrr,
+    readr,
+    stringr,
+    tibble,
+    tidyr,
+    vctrs,
+    xml2
+Suggests: 
+    blastula,
+    config,
+    DT,
+    glue,
+    htmltools,
+    lifecycle,
+    rmarkdown,
+    shiny,
+    testthat,
+    tictoc,
+    tidyverse
+VignetteBuilder: 
+    knitr
+RdMacros: 
+    lifecycle
+Remotes: 
+    hadley/emo
+Config/testthat/edition: 3
+Config/testthat/parallel: true
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.1.1

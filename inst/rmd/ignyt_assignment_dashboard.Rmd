@@ -1,0 +1,77 @@
+---
+title: "ignyt Assignments"
+author: "ignyt v`r packageVersion('ignyt')`"
+output: 
+  html_document:
+    includes:
+      after_body: footer.html
+params:
+  query_date: "2020-06-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(lubridate)
+library(ignyt)
+library(pins)
+library(DT)
+```
+
+## Overview {.tabset}
+
+```{r sql, include = FALSE}
+con <- prep_conn_sqlserver(
+  conn_name = "RadOps",
+  server = "MYSQLSERVER",
+  port = 88888,
+  instance = "MSSQLSERVER",
+  domain = "MyCompany",
+  database = "MyDB"
+)
+
+today <- mdb_query(con, "SELECT *
+                         FROM ignyt.log_assigned
+                         WHERE cast(ignyt_timestamp as date) = cast(GETDATE() as DATE);")
+
+register_ignyt_board()
+if (pin_exists("assigned_mrs")) pinned_mr <- pin_get("assigned_mrs", board = "rsconnect")
+if (pin_exists("assigned_mrs_xover")) pinned_mr2 <- pin_get("assigned_mrs_xover", board = "rsconnect")
+if (pin_exists("assigned_cts")) pinned_ct <- pin_get("assigned_cts", board = "rsconnect")
+
+if (length(ls(pattern = "pinned")) > 0) {
+  all_assigned <- mget(ls(pattern = "pinned")) %>%
+    bind_rows() %>%
+    mutate_if(is.Date, as.character) %>%
+    mutate_if(is.POSIXct, as.character) %>%
+    select(
+      `User Name`, task_name, patient,
+      exam_description, ris_accession_number, exam_weighting, dmt, dmt_match,
+      ignyt_timestamp
+    )
+}
+
+if (nrow(all_assigned) > 0) {
+  today %<>% bind_rows(all_assigned)
+}
+
+historical <- mdb_query(con, sprintf("SELECT *
+                         FROM ignyt.log_assigned
+                         WHERE cast(ignyt.timestamp as date) = cast('%s' as DATE);", params$query_date))
+
+reorder_cols <- function(x) select(x, ignyt_timestamp, `User Name`, task_name, ris_accession_number, patient, exam_description, exam_weighting, dmt, dmt_match)
+today %<>% reorder_cols()
+historical %<>% reorder_cols()
+```
+
+### Today
+
+```{r today, echo=FALSE}
+today %>% datatable()
+```
+
+### Historical
+
+```{r historical, echo=FALSE}
+historical %>% datatable()
+```

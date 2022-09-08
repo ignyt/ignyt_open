@@ -1,0 +1,183 @@
+---
+title: "ignyt"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{ignyt}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+Let's start by loading the recommended packages, and set some initial parameters.
+```{r setup, message = FALSE}
+
+library(ignyt)
+
+library(dplyr)
+library(magrittr)
+library(lubridate)
+library(knitr)
+library(tictoc)
+
+# Set some document-wide parameters:
+shift <- "am"
+ps_test <- TRUE
+```
+
+## Examination allocation report
+
+This report shows the daily allocation of radiological CT and MRI examinations to all  radiologists on a summarized and on an individual level. 
+
+### Fetch data {.tabset}
+
+We would usually connect to the reporting API (in our case 'ps' is short for PowerScribe), determine which shift we're assigning and fetch a worklist with one of the `fetch` commands:
+
+```{r prep, eval = FALSE}
+# Not run
+
+if (hour(Sys.time()) < 12) {
+  shift <- "am"
+} else {
+  shift <- "pm"
+}
+
+ps_auth()
+
+register_ignyt_board()
+
+worklist <- fetch_completed() %>%
+  prep_worklist()
+```
+
+But for the purposes of this vignette, we will use the provided built-in test data:
+
+```{r sim_fetch}
+
+tic()
+worklist <- sim_worklist(1) %>%
+  prep_worklist()
+```
+
+Next, we simulate assignment (usually we would use `assign` instead of `sim_assign` and `shift_rads` instead of `sim_shift_rads`)
+
+```{r sim_assign}
+
+ct_att <- sim_shift_rads(1, "CT", shift)
+cts <- worklist %>% divide_ct(ct_att, 2, bypass_ps = ps_test)
+ct_att_unnested <- cts$assignments %>% sim_assign()
+log_not_assigned_ct <- cts$not_assigned %>%
+  bind_rows(ct_att_unnested %>% filter(assigned_status != "OK"))
+ct_att_unnested %<>% filter(assigned_status == "OK")
+# update_pin_bal(ct_att_unnested, test_pin = TRUE)
+
+mr_att <- sim_shift_rads(1, "MR", shift)
+mrs <- worklist %>%
+  filter(!ris_accession_number %in% ct_att_unnested$ris_accession_number) %>% 
+  divide_mr(mr_att, 2, bypass_ps = ps_test)
+mr_att_unnested <- mrs$assignments %>% sim_assign()
+log_not_assigned_mr <- mrs$not_assigned %>%
+  bind_rows(mr_att_unnested %>% filter(assigned_status != "OK"))
+mr_att_unnested %<>% filter(assigned_status == "OK")
+# update_pin_bal(mr_att_unnested, test_pin = TRUE)
+
+toc(log = TRUE, quiet = TRUE)
+```
+
+You may time the whole process and display the time to run to the user, in our case `r tic.log() %>% unlist() %>% stringr::str_extract("\\d+\\..\\d+ sec")`. Usually this will be longer due to SQL queries, built-in pauses between API requests etc.
+
+Now we can inspect how the exams were divided:
+
+#### MR
+
+```{r mr_summary_tables, eval=FALSE}
+
+mr_att_unnested %>%
+  group_by(Name) %>%
+  summarise(
+    `Weighted exam units` = sum(exam_weighting),
+    `Number of exams` = n()
+  ) %>%
+  kable()
+```
+
+#### CT
+
+```{r ct_summary_tables, eval=FALSE}
+
+ct_att_unnested %>%
+  group_by(Name) %>%
+  summarise(
+    Shift = first(task_name),
+    `Number of exams` = n(),
+    `Weighted exam units` = sum(exam_weighting)
+  ) %>%
+  kable()
+```
+
+#### CT details
+
+```{r ct_details, eval=FALSE}
+
+ct_att_unnested %>%
+  select(
+    Name, task_name, ris_accession_number, ris_mrn,
+    dmt.1:pref.3, state_code, ris_exam_end_dt,
+    wet_read_request, exam_description, history, dmt, dmt_match
+  ) %>%
+  kable()
+```
+
+#### MRI details
+
+```{r mr_details, eval=FALSE}
+
+mr_att_unnested %>%
+  select(
+    Name, task_name, ris_accession_number, ris_mrn,
+    dmt.1:dmt.4, state_code, ris_exam_end_dt, wet_read_request, exam_description, history, dmt
+  ) %>%
+  kable()
+```
+
+#### Not successfully allocated exams
+
+```{r failures, eval=FALSE}
+bind_rows(log_not_assigned_ct, log_not_assigned_mr) %>%
+  filter(!is.na(assigned_status)) %>%
+  bind_rows(log_not_assigned_ct, log_not_assigned_mr) %>%
+  arrange(modality_code, wet_read_request, ris_exam_end_dt) %>%
+  select(
+    modality_code, ris_accession_number, ris_mrn, ris_exam_end_dt,
+    wet_read_request, state_code, dmt, ps_status, assigned_status
+  ) %>%
+  kable()
+```
+
+
+#### Leftovers
+
+```{r leftovers, eval=FALSE}
+
+bind_rows(log_not_assigned_ct, log_not_assigned_mr) %>%
+  filter(is.na(assigned_status)) %>%
+  select(
+    modality_code, ris_accession_number, ris_mrn, ris_exam_end_dt,
+    wet_read_request, state_code, dmt, ps_status
+  ) %>%
+  DT::datatable()
+```
+
+Pin: Balance sheet
+
+```{r balance, eval=FALSE}
+if (nrow(pins::pin_find(name = "ignyt_balance_sheet_test")) > 0) {
+  pins::pin_get("ignyt_balance_sheet_test", "rsconnect") %>%
+    kable()
+}
+```
